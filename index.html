@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PayAI — Smart Payment Assistant</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="https://www.paypal.com/sdk/js?client-id={{ paypal_client_id|urlencode }}&currency={{ currency }}&intent=capture" data-sdk-integration-source="button-factory"></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#"><span class="brand-icon">P</span> PayAI</a>
+  <div class="top-right"><span class="sandbox"><i></i> {{ paypal_mode|upper }} ENVIRONMENT</span><span class="avatar">PA</span></div>
+</header>
+<main class="shell">
+  <section class="hero">
+    <div><p class="eyebrow">SMART BUSINESS PAYMENTS</p><h1>Payments, made <span>intelligent.</span></h1>
+    <p class="subhead">Create clear AI-assisted quotations and collect payments securely through PayPal Sandbox.</p></div>
+    <div class="hero-mark">✦</div>
+  </section>
+
+  <section class="stats">
+    <article class="stat"><span class="stat-label">Platform</span><strong>PayAI</strong><small>AI-assisted invoicing</small></article>
+    <article class="stat"><span class="stat-label">Payment gateway</span><strong>PayPal</strong><small>Sandbox checkout</small></article>
+    <article class="stat"><span class="stat-label">Currency</span><strong>{{ currency }}</strong><small>Configured currency</small></article>
+  </section>
+
+  <div class="section-heading"><div><p class="eyebrow">WORKSPACE</p><h2>Create a quotation</h2></div><span class="step">01 / 03</span></div>
+  <section class="workspace">
+    <div class="panel form-panel">
+      <div class="panel-title"><div class="panel-icon">✎</div><div><h3>Customer details</h3><p>Enter the service and agreed amount.</p></div></div>
+      <form id="quote-form">
+        <label>Customer name<input id="customer-name" maxlength="80" required placeholder="e.g. Alex Johnson"></label>
+        <label>Customer email<input id="customer-email" type="email" maxlength="120" required placeholder="alex@example.com"></label>
+        <label>Service description<textarea id="description" maxlength="500" required rows="3" placeholder="Describe the product or service..."></textarea></label>
+        <label>Agreed amount ({{ currency }})<input id="amount" type="number" min="0.01" max="10000" step="0.01" required placeholder="49.99"></label>
+        <p class="hint">The amount you enter is fixed. AI only writes the quotation text; it cannot change the price.</p>
+        <button class="primary-btn" id="generate-btn" type="submit">✦ Generate AI quotation <span>→</span></button>
+      </form>
+      <div id="form-message" class="message" aria-live="polite"></div>
+    </div>
+
+    <div class="panel quote-panel">
+      <div class="panel-title"><div class="panel-icon sparkle">✦</div><div><h3>AI quotation preview</h3><p>Gemini-generated customer-facing summary.</p></div></div>
+      <div id="empty-state" class="empty-state"><div class="empty-illustration">✧</div><strong>Your quotation will appear here</strong><p>Complete the form to generate a quote with AI.</p></div>
+      <div id="quote-result" class="hidden">
+        <div class="invoice-top"><span class="tag" id="ai-tag">AI QUOTE</span><span class="invoice-id" id="invoice-id"></span></div>
+        <div class="quote-copy" id="quote-copy"></div>
+        <div class="amount-row"><div><small>AMOUNT DUE</small><strong id="quote-amount"></strong></div><span class="pending" id="payment-status">PENDING</span></div>
+        <div class="divider"></div>
+        <h4>Complete payment</h4>
+        <p class="muted">Use a PayPal Sandbox personal test account to approve this test payment.</p>
+        <div id="paypal-button-container"></div>
+        <div id="paypal-message" class="message" aria-live="polite"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section-heading history-heading"><div><p class="eyebrow">ACTIVITY</p><h2>Recent invoices</h2></div><button class="text-btn" id="refresh-btn">↻ Refresh</button></section>
+  <section class="panel table-panel">
+    <div class="table-wrap"><table><thead><tr><th>INVOICE</th><th>CUSTOMER</th><th>SERVICE</th><th>AMOUNT</th><th>STATUS</th></tr></thead><tbody id="invoice-rows"><tr><td colspan="5" class="muted">No invoices yet.</td></tr></tbody></table></div>
+  </section>
+  <footer><span>PayAI · Educational demo project</span><span>Never use Sandbox credentials for live payments.</span></footer>
+</main>
+<script>
+const CURRENCY = {{ currency|tojson }};
+let currentInvoice = null;
+const $ = (id) => document.getElementById(id);
+function showMessage(id, text, kind="") { const el=$(id); el.textContent=text; el.className="message "+kind; }
+function money(value, currency=CURRENCY) {
+  return new Intl.NumberFormat(undefined,{style:"currency",currency}).format(Number(value));
+}
+$("quote-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("generate-btn").disabled = true;
+  $("generate-btn").textContent = "Generating quotation…";
+  showMessage("form-message", "");
+  try {
+    const response = await fetch("/api/quotes", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        customer_name:$("customer-name").value,
+        customer_email:$("customer-email").value,
+        description:$("description").value,
+        amount:$("amount").value
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not create quotation.");
+    currentInvoice = data;
+    $("empty-state").classList.add("hidden");
+    $("quote-result").classList.remove("hidden");
+    $("invoice-id").textContent = "INV-" + data.invoice_id;
+    $("quote-copy").textContent = data.quote;
+    $("quote-amount").textContent = money(data.amount);
+    $("ai-tag").textContent = data.ai_source === "gemini" ? "GEMINI AI QUOTE" : "DEMO QUOTE";
+    $("payment-status").textContent = "PENDING";
+    $("paypal-button-container").innerHTML = "";
+    showMessage("paypal-message", "");
+    if (window.paypal && {{ (paypal_client_id|length > 0)|tojson }}) {
+      renderPayPalButton();
+    } else {
+      showMessage("paypal-message", "PayPal is not configured yet. Add Sandbox Client ID and Secret to .env, then restart.", "warning");
+    }
+    showMessage("form-message", "Quotation created successfully.", "success");
+    await loadInvoices();
+  } catch (error) {
+    showMessage("form-message", error.message, "error");
+  } finally {
+    $("generate-btn").disabled = false;
+    $("generate-btn").innerHTML = '✦ Generate AI quotation <span>→</span>';
+  }
+});
+
+function renderPayPalButton() {
+  paypal.Buttons({
+    createOrder: async () => {
+      const response = await fetch("/api/paypal/create-order", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({invoice_id:currentInvoice.invoice_id})
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Unable to create PayPal order.");
+      return data.id;
+    },
+    onApprove: async (data) => {
+      showMessage("paypal-message", "Verifying and capturing your payment…");
+      const response = await fetch("/api/paypal/capture-order", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({order_id:data.orderID, invoice_id:currentInvoice.invoice_id})
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Payment capture failed.");
+      $("payment-status").textContent = "PAID";
+      $("payment-status").className = "paid";
+      showMessage("paypal-message", "Payment completed! Capture ID: " + (result.capture_id || "recorded"), "success");
+      await loadInvoices();
+    },
+    onCancel: () => showMessage("paypal-message", "Checkout cancelled. Your invoice remains pending.", "warning"),
+    onError: (err) => {
+      console.error(err);
+      showMessage("paypal-message", "PayPal checkout error. Check your Sandbox setup and try again.", "error");
+    }
+  }).render("#paypal-button-container");
+}
+
+async function loadInvoices() {
+  const response = await fetch("/api/invoices");
+  const invoices = await response.json();
+  const body = $("invoice-rows");
+  if (!invoices.length) {
+    body.innerHTML = '<tr><td colspan="5" class="muted">No invoices yet.</td></tr>';
+    return;
+  }
+  body.innerHTML = invoices.map(item => `
+    <tr>
+      <td class="mono">INV-${escapeHtml(item.id)}</td>
+      <td>${escapeHtml(item.customer_name)}</td>
+      <td>${escapeHtml(item.description)}</td>
+      <td>${money(item.amount,item.currency)}</td>
+      <td><span class="${item.status === "PAID" ? "paid" : "pending"}">${escapeHtml(item.status)}</span></td>
+    </tr>`).join("");
+}
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+$("refresh-btn").addEventListener("click", loadInvoices);
+loadInvoices();
+</script>
+</body>
+</html>
